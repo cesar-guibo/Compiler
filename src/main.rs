@@ -240,9 +240,9 @@ impl LazyLexer {
 
 
 fn main() {
-    let aux = "Hello (World \\(W\\))*|(Mother \\\\ fucker \\(MF\\)). \\* \\| [abcdek]";
+    let aux = "Hello (World \\(W\\))*|(Mother \\\\ fucker \\(MF\\))\\. \\* \\| [abcdek]";
     println!("{}", RegexAst::new(aux).unwrap());
-    println!("{}", RegexAst::new("a").unwrap());
+    println!("{:?}\n", RegexAst::new("((hello)|(ab(cd)*))cdcdef").unwrap());
     println!("{:?}\n", LazyLexer::new("ab(cd)*cde", Rc::new(IdentifierBuilder {})).unwrap());
     let fst = LazyLexer::new("((hello)|(ab(cd)*))cdcdef", Rc::new(IdentifierBuilder {})).unwrap();
     println!("{:?}\n", RegexAst::new("((hello)|(ab(cd)*))cdcdef").unwrap());

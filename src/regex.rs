@@ -1,31 +1,3 @@
-
-#[derive(Debug)]
-pub enum RegexToken {
-    OpenSubpattern,
-    CloseSubpattern,
-    OpenOptions,
-    CloseOptions,
-    Escape,
-    KleeneClosureOperator,
-    OrOperator,
-    Char(char),
-}
-
-#[derive(Debug)]
-pub enum RegexRule {
-    Expressions,
-    Or,
-    SingleExpression,
-    ExpressionItem,
-    Options,
-    OptionsItem,
-    SubpatternExpressions,
-    SubpatternOr,
-    SubpatternSingleExpression,
-    SubpatternExpressionItem,
-    Escape
-}
-
 #[derive(Debug)]
 pub enum RegexOp {
     Char(char),
@@ -50,382 +22,144 @@ pub struct RegexAst {
 
 impl<'a> RegexAst {
     pub fn new(pattern: &str) -> Result<RegexAst, String> {
-        let tokens = pattern.chars().map(|ch| match ch {
-            '(' => RegexToken::OpenSubpattern,
-            ')' => RegexToken::CloseSubpattern,
-            '[' => RegexToken::OpenOptions,
-            ']' => RegexToken::CloseOptions,
-            '\\' => RegexToken::Escape,
-            '*' => RegexToken::KleeneClosureOperator,
-            '|' => RegexToken::OrOperator,
-            ch => RegexToken::Char(ch),
-        }).rev().collect::<Vec<RegexToken>>();
-        let (result, tks) = Self::parse(RegexRule::Expressions, tokens)?;
-        if !tks.is_empty() {
-            return Err("(0)".to_string())
+        let chars = pattern.chars().collect::<Vec<char>>();
+        Self::parse(&chars[..])
+    }
+
+    fn parse(pattern: &[char]) -> Result<RegexAst, String> {
+        let mut result = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
+        let n = pattern.len();
+        let mut idx = 0;
+        while idx < n {
+            if pattern[idx] == '|' {
+                return Ok(result.or(Self::parse(&pattern[(idx + 1)..])?));
+            }
+            if pattern[idx] == '(' {
+                let start = idx + 1;
+                let mut subpatterns = 1;
+                while subpatterns > 0 {
+                    idx += 1;
+                    if idx >= n {
+                        return Err("Pattern doesn't have a matching ) for (".to_string());
+                    }
+                    if pattern[idx] == '\\' {
+                        idx += 1;
+                        continue;
+                    }
+                    if pattern[idx] == '(' {
+                        subpatterns += 1;
+                        continue;
+                    }
+                    if pattern[idx] == ')' {
+                        subpatterns -= 1;
+                    }
+                }
+                let new = Self::parse(&pattern[start..idx])?;
+                if idx < n - 1 && pattern[idx + 1] == '*' {
+                    result = result.concat(new.kleene_closure());
+                    idx += 2;
+                } else {
+                    result = result.concat(new);
+                    idx += 1;
+                }
+                continue;
+            }
+            if pattern[idx] == '[' {
+                let start = idx + 1;
+                while pattern[idx] != ']' {
+                    idx += 1;
+                    if idx >= n {
+                        return Err("Pattern doesn't have a matching ] for [".to_string());
+                    }
+                    if pattern[idx] == '\\' {
+                        idx += 1;
+                        continue;
+                    }
+                }
+                let new = Self::parse_options(&pattern[start..idx])?;
+                if idx + 1 < n && pattern[idx + 1] == '*' {
+                    result = result.concat(new.kleene_closure());
+                    idx += 2;
+                } else {
+                    result = result.concat(new);
+                    idx += 1;
+                }
+                continue;
+            }
+            if pattern[idx] == ')' {
+                return Err("Pattern doesn't have a matching ( for )".to_string());
+            }
+            if  pattern[idx] == ']' {
+                return Err("Pattern doesn't have a matching [ for ]".to_string());
+            }
+            if pattern[idx] == '\\' {
+                if idx + 1 >= n {
+                    return Err("Pattern doesn't have a character to be escaped by \\".to_string());
+                }
+                result = result.concat(RegexAst { storage: vec![RegexOp::Char(pattern[idx + 1])], head: 0 });
+                idx += 2;
+                continue;
+            }
+            let mut new = match pattern[idx] {
+                '.' => (0u8..=255u8).map(|val| RegexAst { storage: vec![RegexOp::Char(char::from(val))], head: 0 })
+                    .fold(RegexAst { storage: Vec::<RegexOp>::new(), head: 0 }, |acc, x| acc.or(x)),
+                ch => RegexAst { storage: vec![RegexOp::Char(ch)], head: 0 }
+            };
+            if idx + 1 < n && pattern[idx + 1] == '*' {
+                new = new.kleene_closure();
+                idx += 1;
+            } 
+            result = result.concat(new);
+            idx += 1;
         }
         Ok(result)
     }
 
-    fn parse(rule: RegexRule, mut tokens: Vec<RegexToken>) -> Result<(RegexAst, Vec<RegexToken>), String> {
-        if let Some(token) = tokens.pop() {
-            return match (rule, &token) {
-                (
-                    RegexRule::Expressions,
-                    RegexToken::OpenSubpattern
-                        | RegexToken::OpenOptions
-                        | RegexToken::Escape
-                        | RegexToken::OrOperator
-                        | RegexToken::Char(_)
-                ) => {
-                    tokens.push(token);
-                    let (mut ast, mut tks) = Self::parse(RegexRule::SingleExpression, tokens)?;
-                    let acc = ast;
-                    (ast, tks) = Self::parse(RegexRule::Or, tks)?;
-                    Ok((acc.or(ast), tks))
-                },
-                (RegexRule::Expressions, RegexToken::CloseSubpattern) => {
-                    Err("Pattern doesn't have a matching ( for ) (1)".to_string())
-                },
-                (RegexRule::Expressions, RegexToken::CloseOptions) => {
-                    Err("Pattern doesn't have a matching [ for ]".to_string())
-                },
-                (RegexRule::Expressions, RegexToken::KleeneClosureOperator) => {
-                    Err("Pattern can't start with *".to_string())
-                },
-
-
-                (
-                    RegexRule::Or,
-                    RegexToken::OrOperator
-                 ) => {
-                    Self::parse(RegexRule::Expressions, tokens)
-                },
-                (
-                    RegexRule::Or,
-                    RegexToken::OpenSubpattern
-                        | RegexToken::CloseSubpattern
-                        | RegexToken::OpenOptions
-                        | RegexToken::CloseOptions
-                        | RegexToken::Escape
-                        | RegexToken::KleeneClosureOperator
-                        | RegexToken::Char(_)
-                ) => {
-                    panic!("The state ({:?}, {:?}) shouldn't be reachable", RegexRule::Or, &token);
-                },
-
-
-                (
-                    RegexRule::SingleExpression,
-                    RegexToken::Char(_)
-                        | RegexToken::OpenSubpattern
-                        | RegexToken::OpenOptions
-                        | RegexToken::Escape
-                ) => {
-                    tokens.push(token);
-                    let (mut ast, mut tks) = Self::parse(RegexRule::ExpressionItem, tokens)?;
-                    let mut acc = ast;
-                    if tks.pop().is_some_and(|tkn| matches!(tkn, RegexToken::KleeneClosureOperator)) {
-                        acc.storage.push(RegexOp::KleeneClosure(acc.head));
-                        acc.head = acc.storage.len() - 1;
-                    }
-                    (ast, tks) = Self::parse(RegexRule::SingleExpression, tks)?;
-                    Ok((acc.concat(ast), tks))
-                },
-                (RegexRule::SingleExpression, RegexToken::OrOperator) => {
-                    tokens.push(token);
-                    let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::SingleExpression, RegexToken::CloseSubpattern) => {
-                    Err("Pattern doesn't have a matching ( for ) (2)".to_string())
-                },
-                (RegexRule::SingleExpression, RegexToken::CloseOptions) => {
-                    Err("Pattern doesn't have a matching [ for ]".to_string())
-                },
-                (RegexRule::SingleExpression, RegexToken::KleeneClosureOperator) => {
-                    Err("Pattern can't start with *".to_string())
-                },
-
-
-                (RegexRule::ExpressionItem, RegexToken::Char(ch)) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char(*ch)], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::ExpressionItem, RegexToken::OpenSubpattern) => {
-                    let (ast, mut tks) = Self::parse(RegexRule::SubpatternExpressions, tokens)?;
-                    if tks.pop().is_some_and(|token| matches!(token, RegexToken::CloseSubpattern)) {
-                        Ok((ast, tks))
-                    } else {
-                        panic!("Unreachable state");
-                    }
-                },
-                (RegexRule::ExpressionItem, RegexToken::OpenOptions) => {
-                    let (ast, mut tks) = Self::parse(RegexRule::Options, tokens)?;
-                    if tks.pop().is_some_and(|token| matches!(token, RegexToken::CloseOptions)) {
-                        Ok((ast, tks))
-                    } else {
-                        panic!("Unreachable state");
-                    }
-                },
-                (RegexRule::ExpressionItem, RegexToken::Escape) => {
-                    Self::parse(RegexRule::Escape, tokens)
-                },
-                (
-                    RegexRule::ExpressionItem,
-                    RegexToken::CloseSubpattern
-                        | RegexToken::CloseOptions
-                        | RegexToken::KleeneClosureOperator
-                        | RegexToken::OrOperator
-                ) => {
-                    Err("(1)".to_string())
-                },
-
-
-                (
-                    RegexRule::Options,
-                    RegexToken::OpenSubpattern
-                        | RegexToken::CloseSubpattern
-                        | RegexToken::OpenOptions
-                        | RegexToken::KleeneClosureOperator
-                        | RegexToken::OrOperator
-                        | RegexToken::Char(_)
-                        | RegexToken::Escape
-                ) => {
-                    tokens.push(token);
-                    let (mut ast, mut tks) = Self::parse(RegexRule::OptionsItem, tokens)?;
-                    let acc = ast;
-                    (ast, tks) = Self::parse(RegexRule::Options, tks)?;
-                    Ok((acc.or(ast), tks))
-                },
-                (RegexRule::Options, RegexToken::CloseOptions) => {
-                    tokens.push(token);
-                    let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                    Ok((ast, tokens))
-                },
-
-
-                (RegexRule::OptionsItem, RegexToken::OpenSubpattern) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char('(')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::OptionsItem, RegexToken::CloseSubpattern) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char(')')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::OptionsItem, RegexToken::OpenOptions) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char('[')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::OptionsItem, RegexToken::Escape) => {
-                    Self::parse(RegexRule::Escape, tokens)
-                },
-                (RegexRule::OptionsItem, RegexToken::KleeneClosureOperator) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char('*')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::OptionsItem, RegexToken::OrOperator) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char('|')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::OptionsItem, RegexToken::Char(ch)) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char(*ch)], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::OptionsItem, RegexToken::CloseOptions) => {
-                    tokens.push(token);
-                    let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                    Ok((ast, tokens))
-                },
-
-
-
-                (
-                    RegexRule::SubpatternExpressions,
-                    RegexToken::OpenSubpattern
-                        | RegexToken::OpenOptions
-                        | RegexToken::Escape
-                        | RegexToken::OrOperator
-                        | RegexToken::Char(_)
-                ) => {
-                    tokens.push(token);
-                    let (mut ast, mut tks) = Self::parse(RegexRule::SubpatternSingleExpression, tokens)?;
-                    let acc = ast;
-                    (ast, tks) = Self::parse(RegexRule::SubpatternOr, tks)?;
-                    Ok((acc.or(ast), tks))
-                },
-                (RegexRule::SubpatternExpressions, RegexToken::CloseSubpattern) => {
-                    tokens.push(token);
-                    let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::SubpatternExpressions, RegexToken::CloseOptions) => {
-                    Err("Pattern has no matching ] for [".to_string())
+    fn parse_options(pattern: &[char]) -> Result<RegexAst, String> {
+        let mut result = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
+        let n = pattern.len();
+        let mut idx = 0;
+        while idx < n {
+            if pattern[idx] == '\\' {
+                if idx + 1 >= n {
+                    return Err("Pattern doesn't have a character to be escaped by \\".to_string());
                 }
-                (RegexRule::SubpatternExpressions, RegexToken::KleeneClosureOperator) => {
-                    Err("There is no character to apply *".to_string())
-                },
-
-
-                (
-                    RegexRule::SubpatternOr,
-                    RegexToken::OrOperator
-                 ) => {
-                    Self::parse(RegexRule::SubpatternExpressions, tokens)
-                },
-                (
-                    RegexRule::SubpatternOr,
-                    RegexToken::OpenSubpattern
-                        | RegexToken::OpenOptions
-                        | RegexToken::CloseOptions
-                        | RegexToken::Escape
-                        | RegexToken::KleeneClosureOperator
-                        | RegexToken::Char(_)
-                ) => {
-                    panic!("The state ({:?}, {:?}) shouldn't be reachable", RegexRule::SubpatternOr, &token);
-                },
-                (RegexRule::SubpatternOr, RegexToken::CloseSubpattern) => {
-                    tokens.push(token);
-                    let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                    Ok((ast, tokens))
-                },
-
-
-                (
-                    RegexRule::SubpatternSingleExpression,
-                    RegexToken::Char(_)
-                        | RegexToken::OpenSubpattern
-                        | RegexToken::OpenOptions
-                        | RegexToken::Escape
-                ) => {
-                    tokens.push(token);
-                    let (mut ast, mut tks) = Self::parse(RegexRule::SubpatternExpressionItem, tokens)?;
-                    let mut acc = ast;
-                    if tks.pop().is_some_and(|tkn| matches!(tkn, RegexToken::KleeneClosureOperator)) {
-                        acc.storage.push(RegexOp::KleeneClosure(acc.head));
-                        acc.head = acc.storage.len() - 1;
-                    }
-                    (ast, tks) = Self::parse(RegexRule::SubpatternSingleExpression, tks)?;
-                    Ok((acc.concat(ast), tks))
-                },
-                (
-                    RegexRule::SubpatternSingleExpression,
-                    RegexToken::CloseSubpattern
-                        | RegexToken::OrOperator
-                ) => {
-                    tokens.push(token);
-                    let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::SubpatternSingleExpression, RegexToken::CloseOptions) => {
-                    Err("Pattern has no matching ] for [".to_string())
-                }
-                (RegexRule::SubpatternSingleExpression, RegexToken::KleeneClosureOperator) => {
-                    Err("There is no character to apply *".to_string())
-                },
-
-
-                (RegexRule::SubpatternExpressionItem, RegexToken::Char(ch)) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char(*ch)], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::SubpatternExpressionItem, RegexToken::OpenSubpattern) => {
-                    let (ast, mut tks) = Self::parse(RegexRule::SubpatternExpressions, tokens)?;
-                    if tks.pop().is_some_and(|token| matches!(token, RegexToken::CloseSubpattern)) {
-                        Ok((ast, tks))
-                    } else {
-                        panic!("Unreachable state");
-                    }
-                },
-                (RegexRule::SubpatternExpressionItem, RegexToken::OpenOptions) => {
-                    let (ast, mut tks) = Self::parse(RegexRule::Options, tokens)?;
-                    if tks.pop().is_some_and(|token| matches!(token, RegexToken::CloseOptions)) {
-                        Ok((ast, tks))
-                    } else {
-                        panic!("Unreachable state");
-                    }
-                },
-                (RegexRule::SubpatternExpressionItem, RegexToken::Escape) => {
-                    Self::parse(RegexRule::Escape, tokens)
-                },
-                (
-                    RegexRule::SubpatternExpressionItem,
-                    RegexToken::KleeneClosureOperator
-                        | RegexToken::OrOperator
-                        | RegexToken::CloseSubpattern
-                ) => {
-                    tokens.push(token);
-                    let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::SubpatternExpressionItem, RegexToken::CloseOptions) => {
-                    Err("Pattern has no matching ] for [".to_string())
-                }
-               
-
-                (RegexRule::Escape, RegexToken::OpenSubpattern) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char('(')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::Escape, RegexToken::CloseSubpattern) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char(')')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::Escape, RegexToken::OpenOptions) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char('[')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::Escape, RegexToken::CloseOptions) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char(']')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::Escape, RegexToken::Escape) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char('\\')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::Escape, RegexToken::KleeneClosureOperator) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char('*')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::Escape, RegexToken::OrOperator) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char('|')], head: 0 };
-                    Ok((ast, tokens))
-                },
-                (RegexRule::Escape, RegexToken::Char(ch)) => {
-                    let ast = RegexAst { storage: vec![RegexOp::Char(*ch)], head: 0 };
-                    Ok((ast, tokens))
-                },
+                result = result.or(RegexAst { storage: vec![RegexOp::Char(pattern[idx + 1])], head: 0 });
+                idx += 2;
+                continue;
             }
-        }
-        match rule {
-            RegexRule::Expressions => {
-                let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                Ok((ast, tokens))
-            },
-            RegexRule::Or => {
-                let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                Ok((ast, tokens))
-            },
-            RegexRule::SingleExpression => {
-                let ast = RegexAst { storage: Vec::<RegexOp>::new(), head: 0 };
-                Ok((ast, tokens))
-            },
-            RegexRule::Escape => {
-                Err("Pattern missing the character that should be escaped after \\".to_string())
-            },
-            RegexRule::SubpatternOr
-                | RegexRule::SubpatternSingleExpression 
-                | RegexRule::SubpatternExpressionItem
-                | RegexRule::SubpatternExpressions => {
-                Err("Pattern doesn't have a matching ) for (".to_string())
-            },
-            RegexRule::OptionsItem | RegexRule::Options => {
-                Err("Pattern missing matching ] for [".to_string())
-            },
-            RegexRule::ExpressionItem => {
-                panic!("Unreachable state");
+            if idx + 2 < n && pattern[idx + 1] == '-' {
+                if pattern[idx + 2] != '\\' {
+                    if pattern[idx + 2] < pattern[idx + 1] {
+                        return Err("".to_string())
+                    }
+                    result = (pattern[idx]..=pattern[idx + 2])
+                        .map(|ch| RegexAst { storage: vec![RegexOp::Char(ch)], head: 0 })
+                        .fold(result, |acc, x| acc.or(x));
+                    idx += 3;
+                    continue;
+                } else if idx + 3 < n {
+                    if pattern[idx + 3] < pattern[idx + 1] {
+                        return Err("".to_string())
+                    }
+                    result = (pattern[idx]..=pattern[idx + 3])
+                        .map(|ch| RegexAst { storage: vec![RegexOp::Char(ch)], head: 0 })
+                        .fold(result, |acc, x| acc.or(x));
+                    idx += 4;
+                    continue;
+                }
             }
+            let new = RegexAst { storage: vec![RegexOp::Char(pattern[idx])], head: 0 };
+            result = result.or(new);
+            idx += 1;
         }
+        Ok(result)
+    }
+
+    pub fn kleene_closure(mut self: Self) -> RegexAst {
+        self.storage.push(RegexOp::KleeneClosure(self.head));
+        self.head = self.storage.len() - 1;
+        self
     }
 
     pub fn concat(mut self: Self, mut other: RegexAst) -> RegexAst {
