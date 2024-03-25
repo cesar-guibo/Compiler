@@ -1,10 +1,12 @@
+// What should happen when a sequence is accepted by two different tokens
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 pub mod regex;
 
 use crate::parser::{Ast, AstView};
-use regex::{RegexOp, RegexBinaryOp, RegexUnaryOp};
+use regex::{RegexOp, RegexBinaryOp, RegexUnaryOp, RegexTernaryOp};
 
 #[derive(Clone)]
 struct Node<T> {
@@ -32,9 +34,6 @@ impl<'a, T> std::iter::Iterator for TokenIter<'a, T> {
     type Item = Result<T, String>;
 
     fn next(self: &mut Self) -> Option<Self::Item> {
-        if self.next_ch.is_none() {
-            return None;
-        }
         let mut current = &self.lexer.storage[self.lexer.fst];
         let mut state = Vec::<char>::new();
         while let Some(ch) = self.next_ch {
@@ -47,6 +46,9 @@ impl<'a, T> std::iter::Iterator for TokenIter<'a, T> {
                 self.column += 1;
             }
             self.next_ch = self.chars.next();
+        }
+        if self.next_ch.is_none() {
+            return None;
         }
         while let Some(ch) = self.next_ch {
             if let Some(next_node) = current.nexts.get(&ch) {
@@ -104,7 +106,7 @@ impl<T> std::fmt::Debug for LazyLexer<T> {
 
 
 impl<T: std::fmt::Debug> LazyLexer<T> {
-    pub fn new<U: std::fmt::Debug, V: Ast<RegexUnaryOp, RegexBinaryOp, U, char>>(pattern: V, symbol: Rc<dyn Fn(String) -> T>) -> LazyLexer<T> {
+    pub fn new<U: std::fmt::Debug, V: Ast<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, U, char>>(pattern: V, symbol: Rc<dyn Fn(String) -> T>) -> LazyLexer<T> {
         let result = pattern.root().apply(&|op: RegexOp<LazyLexer<T>>| match op {
             RegexOp::Value(ch) => {
                 let storage = vec![
@@ -116,6 +118,7 @@ impl<T: std::fmt::Debug> LazyLexer<T> {
             RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, operand) => operand.kleene_closure(),
             RegexOp::BinaryOp(RegexBinaryOp::Concat, fst, snd) => fst.append(snd),
             RegexOp::BinaryOp(RegexBinaryOp::Or, fst, snd) => fst.or(snd),
+            RegexOp::TernaryOp(..) => { panic!(); },
         });
         if let Some(mut res) = result {
             res.storage[res.last].symbol = Some(symbol.clone());
@@ -286,7 +289,7 @@ mod tests {
         head: &'a RegexOp<Box<MockedRegexAst>>
     }
 
-    impl<'a> AstView<'a, RegexUnaryOp, RegexBinaryOp, char> for MockedRegexAstView<'a> {
+    impl<'a> AstView<'a, RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, char> for MockedRegexAstView<'a> {
         fn apply<T, F: Fn(RegexOp<T>) -> T>(self: Self, f: &F) -> Option<T> {
             match &self.head {
                 RegexOp::Value(c) => Some(f(RegexOp::Value(*c))),
@@ -304,11 +307,14 @@ mod tests {
                     let snd_operand_node = MockedRegexAstView { head: &snd.head };
                     Some(f(RegexOp::BinaryOp(RegexBinaryOp::Concat, fst_operand_node.apply(f)?, snd_operand_node.apply(f)?)))
                 },
+                RegexOp::TernaryOp(..) => {
+                    panic!();
+                },
             }
         }
     }
 
-    impl Ast<RegexUnaryOp, RegexBinaryOp, Box<MockedRegexAst>, char> for MockedRegexAst {
+    impl Ast<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, Box<MockedRegexAst>, char> for MockedRegexAst {
         fn root(self: &Self) -> MockedRegexAstView {
             MockedRegexAstView { head: &self.head }
         }

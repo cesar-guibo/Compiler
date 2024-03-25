@@ -1,4 +1,5 @@
-use crate::parser::{Ast, AstView, Op};
+use crate::parser::{Ast, AstView, AstDrawable, Op, OpDrawingDescriptor};
+use std::collections::HashSet;
 
 #[derive(Debug)]
 pub enum RegexErrorType {
@@ -35,43 +36,47 @@ impl RegexError {
 }
 
 
-impl std::fmt::Display for RegexError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.error_type {
+impl From<RegexError> for String {
+    fn from(error: RegexError) -> Self {
+        match error.error_type {
             RegexErrorType::UnmatchedOpenningParenthesis => {
-                write!(f, "Pattern doesn't have a matching ( for )\n\t{}", self.expression)
+                format!("Pattern doesn't have a matching ( for )\n\t{}", error.expression)
             },
             RegexErrorType::UnmatchedClosingParenthesis => {
-                write!(f, "Pattern doesn't have a matching ) for (\n\t{}", self.expression)
+                format!("Pattern doesn't have a matching ) for (\n\t{}", error.expression)
             },
             RegexErrorType::UnmatchedOpenningSquareBracket => {
-                write!(f, "Pattern doesn't have a matching ] for [\n\t{}", self.expression)
+                format!("Pattern doesn't have a matching ] for [\n\t{}", error.expression)
             },
             RegexErrorType::UnmatchedClosingSquareBracket => {
-                write!(f, "Pattern doesn't have a matching [ for ]\n\t{}", self.expression)
+                format!("Pattern doesn't have a matching [ for ]\n\t{}", error.expression)
             },
             RegexErrorType::NoCharacterToEscape => {
-                write!(f, "Pattern doesn't have a character to be escaped by \\\n\n\t{}", self.expression)
+                format!("Pattern doesn't have a character to be escaped by \\\n\n\t{}", error.expression)
             },
             RegexErrorType::InvalidInterval => {
-                write!(f, "Interval must be of the form a-b where a <= b\\\n\t{}", self.expression)
+                format!("Interval must be of the form a-b where a <= b\\\n\t{}", error.expression)
             },
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegexUnaryOp {
     KleeneClosure
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegexBinaryOp {
     Or,
     Concat,
 }
 
-pub type RegexOp<T> = Op<RegexUnaryOp, RegexBinaryOp, T, char>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegexTernaryOp {}
+
+
+pub type RegexOp<T> = Op<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, T, char>;
 
 pub struct RegexAst {
     storage: Vec<RegexOp<usize>>,
@@ -79,17 +84,36 @@ pub struct RegexAst {
 }
 
 impl std::fmt::Debug for RegexAst {
-    fn fmt(self: &Self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        self.draw(f)
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.to_drawn_string())
     }
 }
 
-impl Ast<RegexUnaryOp, RegexBinaryOp, usize, char> for RegexAst {
+impl Ast<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, usize, char> for RegexAst {
     fn root(self: &Self) -> RegexAstSubtree {
         RegexAstSubtree {
             storage: &self.storage,
             head: self.head
         }
+    }
+}
+
+impl AstDrawable for char {
+    fn draw(&self) -> Vec<OpDrawingDescriptor> {
+        let desc = OpDrawingDescriptor {
+            indentation: 0,
+            vertical_lines: HashSet::new(),
+            has_operands: false,
+            is_last_child: false,
+            name: format!("{}", self)
+        };
+        vec![desc]
+    }
+}
+
+impl AstDrawable for RegexAst {
+    fn draw(&self) -> Vec<OpDrawingDescriptor> {
+        self.draw_tree()
     }
 }
 
@@ -288,9 +312,9 @@ impl RegexAst {
         if n > 0 {
             other.storage = other.storage.into_iter().map(|x| match x {
                 RegexOp::Value(c) => RegexOp::Value(c),
-                RegexOp::BinaryOp(RegexBinaryOp::Or, fst, snd) => RegexOp::BinaryOp(RegexBinaryOp::Or, fst + n, snd + n),
-                RegexOp::BinaryOp(RegexBinaryOp::Concat, fst, snd) => RegexOp::BinaryOp(RegexBinaryOp::Concat, fst + n, snd + n),
-                RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, idx) => RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, idx + n)
+                RegexOp::BinaryOp(op, fst, snd) => RegexOp::BinaryOp(op, fst + n, snd + n),
+                RegexOp::UnaryOp(op, idx) => RegexOp::UnaryOp(op, idx + n),
+                RegexOp::TernaryOp(op, fst, snd, third) => RegexOp::TernaryOp(op, fst + n, snd + n, third + n)
             }).collect();
             self.storage.append(&mut other.storage);
             other.head += n;
@@ -312,9 +336,9 @@ impl RegexAst {
         let n = self.storage.len();
         other.storage = other.storage.into_iter().map(|x| match x {
             RegexOp::Value(c) => RegexOp::Value(c),
-            RegexOp::BinaryOp(RegexBinaryOp::Or, fst, snd) => RegexOp::BinaryOp(RegexBinaryOp::Or, fst + n, snd + n),
-            RegexOp::BinaryOp(RegexBinaryOp::Concat, fst, snd) => RegexOp::BinaryOp(RegexBinaryOp::Concat, fst + n, snd + n),
-            RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, idx) => RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, idx + n)
+            RegexOp::BinaryOp(op, fst, snd) => RegexOp::BinaryOp(op, fst + n, snd + n),
+            RegexOp::UnaryOp(op, idx) => RegexOp::UnaryOp(op, idx + n),
+            RegexOp::TernaryOp(op, fst, snd, third) => RegexOp::TernaryOp(op, fst + n, snd + n, third + n)
         }).collect();
         self.storage.append(&mut other.storage);
         other.head += n;
@@ -335,7 +359,7 @@ pub struct RegexAstSubtree<'a> {
     head: usize
 }
 
-impl<'a> AstView<'a, RegexUnaryOp, RegexBinaryOp, char> for RegexAstSubtree<'a> {
+impl<'a> AstView<'a, RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, char> for RegexAstSubtree<'a> {
     // Post order
     fn apply<T, F: Fn(RegexOp<T>) -> T>(self: Self, f: &F) -> Option<T> {
         match self.storage.get(self.head)? {
@@ -358,7 +382,32 @@ impl<'a> AstView<'a, RegexUnaryOp, RegexBinaryOp, char> for RegexAstSubtree<'a> 
                 let snd_subtree = RegexAstSubtree { storage: self.storage, head: *snd };
                 let snd_operand = snd_subtree.apply(f)?;
                 Some(f(RegexOp::BinaryOp(RegexBinaryOp::Concat, fst_operand, snd_operand)))
-            }
+            },
+            RegexOp::TernaryOp(..) => None
+        }
+    }
+    fn apply_with_state<U, V, F: Fn(RegexOp<U>, V) -> (U, V)>(self: Self, f: &F, s0: V) -> (Option<U>, V) {
+        if let Some(op) = self.storage.get(self.head) {
+            let (val, state) = match op {
+                Op::Value(c) => f(Op::Value(c.clone()), s0),
+                Op::UnaryOp(..) | Op::TernaryOp(..) => {
+                    panic!();
+                },
+                Op::BinaryOp(binary_op, fst, snd) => {
+                    let fst_subtree = RegexAstSubtree { storage: self.storage, head: *fst };
+                    let (fst_operand, fst_state) = fst_subtree.apply_with_state(f, s0);
+                    let snd_subtree = RegexAstSubtree { storage: self.storage, head: *snd };
+                    let (snd_operand, snd_state) = snd_subtree.apply_with_state(f, fst_state);
+                    if let Some((fst, snd)) = fst_operand.zip(snd_operand) {
+                        f(Op::BinaryOp(*binary_op, fst, snd), snd_state)
+                    } else {
+                        return (None, snd_state);
+                    }
+                },
+            };
+            (Some(val), state)
+        } else {
+            (None, s0)
         }
     }
 }
@@ -367,12 +416,6 @@ impl<'a> AstView<'a, RegexUnaryOp, RegexBinaryOp, char> for RegexAstSubtree<'a> 
 mod tests {
     use super::*;
     use std::boxed::Box;
-
-    impl From<RegexError> for String {
-        fn from(err: RegexError) -> String {
-            format!("{}", err)
-        }
-    }
 
     pub fn build_matcher(op: RegexOp<Box<dyn Fn(&str) -> (bool, &str)>>) -> Box<dyn Fn(&str) -> (bool, &str)> {
         match op {
@@ -409,6 +452,7 @@ mod tests {
                     }
                 })
             },
+            RegexOp::TernaryOp(..) => { panic!(); }
         }
     }
 
