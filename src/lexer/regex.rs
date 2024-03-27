@@ -1,5 +1,4 @@
-use crate::parser::{Ast, AstView, AstDrawable, Op, OpDrawingDescriptor};
-use std::collections::HashSet;
+use crate::parser::{Ast, AstView, Op};
 
 #[derive(Debug)]
 pub enum RegexErrorType {
@@ -77,58 +76,56 @@ pub enum RegexTernaryOp {}
 
 
 pub type RegexOp<T> = Op<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, T, char>;
+pub type RegexRefsOp<'a, 'b, 'c, 'd, T> = Op<&'a RegexUnaryOp, &'b RegexBinaryOp, &'c RegexTernaryOp, T, &'d char>;
 
 pub struct RegexAst {
-    storage: Vec<RegexOp<usize>>,
+    nodes: Vec<RegexOp<usize>>,
     head: usize
 }
 
 impl std::fmt::Debug for RegexAst {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.to_drawn_string())
+        write!(f, "RegexAst")
     }
 }
 
 impl Ast<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, usize, char> for RegexAst {
-    fn root(self: &Self) -> RegexAstSubtree {
+    fn view(&self) -> RegexAstSubtree {
         RegexAstSubtree {
-            storage: &self.storage,
+            nodes: &self.nodes,
             head: self.head
         }
     }
 }
 
-impl AstDrawable for char {
-    fn draw(&self) -> Vec<OpDrawingDescriptor> {
-        let desc = OpDrawingDescriptor {
-            indentation: 0,
-            vertical_lines: HashSet::new(),
-            has_operands: false,
-            is_last_child: false,
-            name: format!("{}", self)
-        };
-        vec![desc]
+pub struct RegexAstSubtree<'a> {
+    nodes: &'a Vec<RegexOp<usize>>,
+    head: usize
+}
+
+impl<'a> AstView<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, usize, char> for RegexAstSubtree<'a> {
+    fn root(&self) -> Option<&Op<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, usize, char>> {
+        self.nodes.get(self.head)
+    }
+
+    fn subtree(&self, root: &usize) -> RegexAstSubtree {
+        RegexAstSubtree { nodes: self.nodes, head: *root }
     }
 }
 
-impl AstDrawable for RegexAst {
-    fn draw(&self) -> Vec<OpDrawingDescriptor> {
-        self.draw_tree()
-    }
-}
 
 impl RegexAst {
     pub fn new(pattern: &str) -> Result<RegexAst, RegexError> {
         let chars = pattern.chars().collect::<Vec<char>>();
         if chars.is_empty() {
-            Ok(RegexAst { storage: Vec::<RegexOp<usize>>::new(), head: 0 })
+            Ok(RegexAst { nodes: Vec::<RegexOp<usize>>::new(), head: 0 })
         } else {
             Self::parse(&chars, 0, chars.len() - 1)
         }
     }
 
     fn parse(pattern: &Vec<char>, start: usize, end: usize) -> Result<RegexAst, RegexError> {
-        let mut result = RegexAst { storage: Vec::<RegexOp<usize>>::new(), head: 0 };
+        let mut result = RegexAst { nodes: Vec::<RegexOp<usize>>::new(), head: 0 };
         let mut idx = start;
         while idx <= end {
             if pattern[idx] == '|' {
@@ -231,14 +228,14 @@ impl RegexAst {
                         )
                     );
                 }
-                result = result.concat(RegexAst { storage: vec![RegexOp::Value(pattern[idx + 1])], head: 0 });
+                result = result.concat(RegexAst { nodes: vec![RegexOp::Value(pattern[idx + 1])], head: 0 });
                 idx += 2;
                 continue;
             }
             let mut new = match pattern[idx] {
-                '.' => (0u8..=255u8).map(|val| RegexAst { storage: vec![RegexOp::Value(char::from(val))], head: 0 })
-                    .fold(RegexAst { storage: Vec::<RegexOp<usize>>::new(), head: 0 }, |acc, x| acc.or(x)),
-                ch => RegexAst { storage: vec![RegexOp::Value(ch)], head: 0 }
+                '.' => (0u8..=255u8).map(|val| RegexAst { nodes: vec![RegexOp::Value(char::from(val))], head: 0 })
+                    .fold(RegexAst { nodes: Vec::<RegexOp<usize>>::new(), head: 0 }, |acc, x| acc.or(x)),
+                ch => RegexAst { nodes: vec![RegexOp::Value(ch)], head: 0 }
             };
             if idx + 1 <= end && pattern[idx + 1] == '*' {
                 new = new.kleene_closure();
@@ -251,11 +248,11 @@ impl RegexAst {
     }
 
     fn parse_options(pattern: &Vec<char>, start: usize, end: usize) -> Result<RegexAst, RegexError> {
-        let mut result = RegexAst { storage: Vec::<RegexOp<usize>>::new(), head: 0 };
+        let mut result = RegexAst { nodes: Vec::<RegexOp<usize>>::new(), head: 0 };
         let mut idx = start;
         while idx <= end {
             if pattern[idx] == '\\' {
-                result = result.or(RegexAst { storage: vec![RegexOp::Value(pattern[idx + 1])], head: 0 });
+                result = result.or(RegexAst { nodes: vec![RegexOp::Value(pattern[idx + 1])], head: 0 });
                 idx += 2;
                 continue;
             }
@@ -272,7 +269,7 @@ impl RegexAst {
                         );
                     }
                     result = (pattern[idx]..=pattern[idx + 2])
-                        .map(|ch| RegexAst { storage: vec![RegexOp::Value(ch)], head: 0 })
+                        .map(|ch| RegexAst { nodes: vec![RegexOp::Value(ch)], head: 0 })
                         .fold(result, |acc, x| acc.or(x));
                     idx += 3;
                     continue;
@@ -288,13 +285,13 @@ impl RegexAst {
                         );
                     }
                     result = (pattern[idx]..=pattern[idx + 3])
-                        .map(|ch| RegexAst { storage: vec![RegexOp::Value(ch)], head: 0 })
+                        .map(|ch| RegexAst { nodes: vec![RegexOp::Value(ch)], head: 0 })
                         .fold(result, |acc, x| acc.or(x));
                     idx += 4;
                     continue;
                 }
             }
-            let new = RegexAst { storage: vec![RegexOp::Value(pattern[idx])], head: 0 };
+            let new = RegexAst { nodes: vec![RegexOp::Value(pattern[idx])], head: 0 };
             result = result.or(new);
             idx += 1;
         }
@@ -302,24 +299,24 @@ impl RegexAst {
     }
 
     fn concat(mut self: Self, mut other: RegexAst) -> RegexAst {
-        if self.storage.is_empty() {
+        if self.nodes.is_empty() {
             return other
         }
-        if other.storage.is_empty() {
+        if other.nodes.is_empty() {
             return self
         }
-        let n = self.storage.len();
+        let n = self.nodes.len();
         if n > 0 {
-            other.storage = other.storage.into_iter().map(|x| match x {
+            other.nodes = other.nodes.into_iter().map(|x| match x {
                 RegexOp::Value(c) => RegexOp::Value(c),
                 RegexOp::BinaryOp(op, fst, snd) => RegexOp::BinaryOp(op, fst + n, snd + n),
                 RegexOp::UnaryOp(op, idx) => RegexOp::UnaryOp(op, idx + n),
                 RegexOp::TernaryOp(op, fst, snd, third) => RegexOp::TernaryOp(op, fst + n, snd + n, third + n)
             }).collect();
-            self.storage.append(&mut other.storage);
+            self.nodes.append(&mut other.nodes);
             other.head += n;
-            self.storage.push(RegexOp::BinaryOp(RegexBinaryOp::Concat, self.head, other.head));
-            self.head = self.storage.len() - 1;
+            self.nodes.push(RegexOp::BinaryOp(RegexBinaryOp::Concat, self.head, other.head));
+            self.head = self.nodes.len() - 1;
         } else {
             self = other;
         }
@@ -327,88 +324,30 @@ impl RegexAst {
     }
 
     fn or(mut self: Self, mut other: RegexAst) -> RegexAst {
-        if self.storage.is_empty() {
+        if self.nodes.is_empty() {
             return other
         }
-        if other.storage.is_empty() {
+        if other.nodes.is_empty() {
             return self
         }
-        let n = self.storage.len();
-        other.storage = other.storage.into_iter().map(|x| match x {
+        let n = self.nodes.len();
+        other.nodes = other.nodes.into_iter().map(|x| match x {
             RegexOp::Value(c) => RegexOp::Value(c),
             RegexOp::BinaryOp(op, fst, snd) => RegexOp::BinaryOp(op, fst + n, snd + n),
             RegexOp::UnaryOp(op, idx) => RegexOp::UnaryOp(op, idx + n),
             RegexOp::TernaryOp(op, fst, snd, third) => RegexOp::TernaryOp(op, fst + n, snd + n, third + n)
         }).collect();
-        self.storage.append(&mut other.storage);
+        self.nodes.append(&mut other.nodes);
         other.head += n;
-        self.storage.push(RegexOp::BinaryOp(RegexBinaryOp::Or, self.head, other.head));
-        self.head = self.storage.len() - 1;
+        self.nodes.push(RegexOp::BinaryOp(RegexBinaryOp::Or, self.head, other.head));
+        self.head = self.nodes.len() - 1;
         self
     }
 
     fn kleene_closure(mut self: Self) -> RegexAst {
-        self.storage.push(RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, self.head));
-        self.head = self.storage.len() - 1;
+        self.nodes.push(RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, self.head));
+        self.head = self.nodes.len() - 1;
         self
-    }
-}
-
-pub struct RegexAstSubtree<'a> {
-    storage: &'a Vec<RegexOp<usize>>,
-    head: usize
-}
-
-impl<'a> AstView<'a, RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, char> for RegexAstSubtree<'a> {
-    // Post order
-    fn apply<T, F: Fn(RegexOp<T>) -> T>(self: Self, f: &F) -> Option<T> {
-        match self.storage.get(self.head)? {
-            RegexOp::Value(c) => Some(f(RegexOp::Value(*c))),
-            RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, idx) => {
-                let subtree = RegexAstSubtree { storage: self.storage, head: *idx };
-                let operand = subtree.apply(f)?;
-                Some(f(RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, operand)))
-            },
-            RegexOp::BinaryOp(RegexBinaryOp::Or, fst, snd) => {
-                let fst_subtree = RegexAstSubtree { storage: self.storage, head: *fst };
-                let fst_operand = fst_subtree.apply(f)?;
-                let snd_subtree = RegexAstSubtree { storage: self.storage, head: *snd };
-                let snd_operand = snd_subtree.apply(f)?;
-                Some(f(RegexOp::BinaryOp(RegexBinaryOp::Or, fst_operand, snd_operand)))
-            },
-            RegexOp::BinaryOp(RegexBinaryOp::Concat, fst, snd) => {
-                let fst_subtree = RegexAstSubtree { storage: self.storage, head: *fst };
-                let fst_operand = fst_subtree.apply(f)?;
-                let snd_subtree = RegexAstSubtree { storage: self.storage, head: *snd };
-                let snd_operand = snd_subtree.apply(f)?;
-                Some(f(RegexOp::BinaryOp(RegexBinaryOp::Concat, fst_operand, snd_operand)))
-            },
-            RegexOp::TernaryOp(..) => None
-        }
-    }
-    fn apply_with_state<U, V, F: Fn(RegexOp<U>, V) -> (U, V)>(self: Self, f: &F, s0: V) -> (Option<U>, V) {
-        if let Some(op) = self.storage.get(self.head) {
-            let (val, state) = match op {
-                Op::Value(c) => f(Op::Value(c.clone()), s0),
-                Op::UnaryOp(..) | Op::TernaryOp(..) => {
-                    panic!();
-                },
-                Op::BinaryOp(binary_op, fst, snd) => {
-                    let fst_subtree = RegexAstSubtree { storage: self.storage, head: *fst };
-                    let (fst_operand, fst_state) = fst_subtree.apply_with_state(f, s0);
-                    let snd_subtree = RegexAstSubtree { storage: self.storage, head: *snd };
-                    let (snd_operand, snd_state) = snd_subtree.apply_with_state(f, fst_state);
-                    if let Some((fst, snd)) = fst_operand.zip(snd_operand) {
-                        f(Op::BinaryOp(*binary_op, fst, snd), snd_state)
-                    } else {
-                        return (None, snd_state);
-                    }
-                },
-            };
-            (Some(val), state)
-        } else {
-            (None, s0)
-        }
     }
 }
 
@@ -417,15 +356,18 @@ mod tests {
     use super::*;
     use std::boxed::Box;
 
-    pub fn build_matcher(op: RegexOp<Box<dyn Fn(&str) -> (bool, &str)>>) -> Box<dyn Fn(&str) -> (bool, &str)> {
+    pub fn build_matcher(op: RegexRefsOp<Box<dyn Fn(&str) -> (bool, &str)>>) -> Box<dyn Fn(&str) -> (bool, &str)> {
         match op {
-            RegexOp::Value(c) => std::boxed::Box::new(move |s: &str| {
-                match s.chars().last().is_some_and(|ch| ch == c) {
-                    true => (true, &s[..(s.len() - 1)]),
-                    false => (false, s)
-                }
-            }),
-            RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, match_operand) => {
+            RegexRefsOp::Value(c) => {
+                let c = c.clone();
+                std::boxed::Box::new(move |s: &str| {
+                    match s.chars().last().is_some_and(|ch| ch == c) {
+                        true => (true, &s[..(s.len() - 1)]),
+                        false => (false, s)
+                    }
+                })
+            },
+            RegexRefsOp::UnaryOp(RegexUnaryOp::KleeneClosure, match_operand) => {
                 std::boxed::Box::new(move |s: &str| {
                     let (mut matched, mut current) = match_operand(s);
                     while matched {
@@ -434,7 +376,7 @@ mod tests {
                     (true, current)
                 })
             },
-            RegexOp::BinaryOp(RegexBinaryOp::Or, fst, snd) => {
+            RegexRefsOp::BinaryOp(RegexBinaryOp::Or, fst, snd) => {
                 std::boxed::Box::new(move |s: &str| {
                     let (matched, state) = snd(s);
                     match matched {
@@ -443,7 +385,7 @@ mod tests {
                     }
                 })
             },
-            RegexOp::BinaryOp(RegexBinaryOp::Concat, fst, snd) => {
+            RegexRefsOp::BinaryOp(RegexBinaryOp::Concat, fst, snd) => {
                 std::boxed::Box::new(move |s: &str| {
                     let (matched, state) = snd(s);
                     match matched {
@@ -452,13 +394,13 @@ mod tests {
                     }
                 })
             },
-            RegexOp::TernaryOp(..) => { panic!(); }
+            RegexRefsOp::TernaryOp(..) => { panic!(); }
         }
     }
 
     #[test]
     fn properly_matches_strings() -> Result<(), RegexError> {
-        let regex_match = RegexAst::new("((hello)|(ab(cd)*))cd.cdef[a-d]")?.root().apply(&build_matcher).unwrap();
+        let regex_match = RegexAst::new("((hello)|(ab(cd)*))cd.cdef[a-d]")?.view().apply(&build_matcher).unwrap();
         let should_pass = [
             "hellocd'cdefa",
             "hellocd\"cdefb",
@@ -515,7 +457,7 @@ mod tests {
 
     #[test]
     fn returns_none_for_apply_on_empty_regex() -> Result<(), RegexError> {
-        let result = RegexAst::new("")?.root().apply(&build_matcher);
+        let result = RegexAst::new("")?.view().apply(&build_matcher);
         assert!(result.is_none());
         Ok(())
     }

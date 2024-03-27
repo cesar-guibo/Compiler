@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashSet, HashMap};
 
-use crate::parser::{Op, OpDrawingDescriptor, Ast, AstView, AstDrawable};
+use crate::parser::{Op, OpDrawingDescriptor, Ast, AstView};
 use crate::tokens::Tokens;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,76 +149,25 @@ pub struct TypedVariable {
 }
 
 #[derive(Debug, Clone)]
-pub enum Value<T: AstDrawable> {
+pub enum Value<T> {
     Literal(i32),
     Variable(T)
 }
 
 
 #[derive(Clone)]
-pub struct Expression<T: std::fmt::Debug + std::clone::Clone + AstDrawable> {
+pub struct Expression<T: std::fmt::Debug> {
     nodes: Vec<Op<UnaryOp, BinaryOp, TernaryOp, usize, Value<T>>>,
     head: usize
 }
 
-pub struct ExpressionView<'a, T: std::fmt::Debug + AstDrawable> {
+pub struct ExpressionView<'a, T: std::fmt::Debug + 'a> {
     nodes: &'a Vec<Op<UnaryOp, BinaryOp, TernaryOp, usize, Value<T>>>,
     head: usize
 }
 
-impl AstDrawable for TypedVariable  {
-    fn draw(&self) -> Vec<OpDrawingDescriptor> {
-        let desc = OpDrawingDescriptor {
-            indentation: 0,
-            vertical_lines: HashSet::new(),
-            has_operands: false,
-            is_last_child: false,
-            name: format!("{}: {}", self.name, self.t)
-        };
-        vec![desc]
-    }
-}
-
-impl AstDrawable for String  {
-    fn draw(&self) -> Vec<OpDrawingDescriptor> {
-        let desc = OpDrawingDescriptor {
-            indentation: 0,
-            vertical_lines: HashSet::new(),
-            has_operands: false,
-            is_last_child: false,
-            name: format!("{}", self)
-        };
-        vec![desc]
-    }
-}
-
-
-impl<T: AstDrawable> AstDrawable for Value<T> {
-    fn draw(&self) -> Vec<OpDrawingDescriptor> {
-        match self {
-            Value::Literal(i) => {
-                let desc = OpDrawingDescriptor {
-                    indentation: 0,
-                    vertical_lines: HashSet::new(),
-                    has_operands: false,
-                    is_last_child: false,
-                    name: format!("{}", i)
-                };
-                vec![desc]
-            },
-            Value::Variable(var) => var.draw()
-        }
-    }
-}
-
-impl<T: AstDrawable + std::fmt::Debug + std::clone::Clone> AstDrawable for Expression<T> {
-    fn draw(&self) -> Vec<OpDrawingDescriptor> {
-        self.draw_tree()
-    }
-}
-
-impl<T: std::fmt::Debug + std::clone::Clone + AstDrawable> Ast<UnaryOp, BinaryOp, TernaryOp, usize, Value<T>> for Expression<T> {
-    fn root(self: &Self) -> ExpressionView<T> {
+impl<T: std::fmt::Debug + std::clone::Clone> Ast<UnaryOp, BinaryOp, TernaryOp, usize, Value<T>> for Expression<T> {
+    fn view(&self) -> ExpressionView<T> {
         ExpressionView {
             nodes: &self.nodes,
             head: self.head
@@ -226,58 +175,19 @@ impl<T: std::fmt::Debug + std::clone::Clone + AstDrawable> Ast<UnaryOp, BinaryOp
     }
 }
 
-impl<'a, T: std::fmt::Debug + std::clone::Clone + AstDrawable> AstView<'a, UnaryOp, BinaryOp, TernaryOp, Value<T>> for ExpressionView<'a, T> {
-    // Post order
-    fn apply<U, F: Fn(Op<UnaryOp, BinaryOp, TernaryOp, U, Value<T>>) -> U>(self: Self, f: &F) -> Option<U> {
-        match self.nodes.get(self.head)? {
-            Op::Value(c) => Some(f(Op::Value(c.clone()))),
-            Op::UnaryOp(..) | Op::TernaryOp(..) => {
-                panic!();
-            },
-            Op::BinaryOp(binary_op, fst, snd) => {
-                let fst_subtree = ExpressionView { nodes: self.nodes, head: *fst };
-                let fst_operand = fst_subtree.apply(f)?;
-                let snd_subtree = ExpressionView { nodes: self.nodes, head: *snd };
-                let snd_operand = snd_subtree.apply(f)?;
-                Some(f(Op::BinaryOp(*binary_op, fst_operand, snd_operand)))
-            },
-        }
+impl<'a, T: std::fmt::Debug + std::clone::Clone> AstView<UnaryOp, BinaryOp, TernaryOp, usize, Value<T>> for ExpressionView<'a, T> {
+    fn root(&self) -> Option<&Op<UnaryOp, BinaryOp, TernaryOp, usize, Value<T>>> {
+       self.nodes.get(self.head)
     }
-    fn apply_with_state<U, V, F: Fn(Op<UnaryOp, BinaryOp, TernaryOp, U, Value<T>>, V) -> (U, V)>(self: Self, f: &F, s0: V) -> (Option<U>, V) {
-        if let Some(op) = self.nodes.get(self.head) {
-            let (val, state) = match op {
-                Op::Value(c) => f(Op::Value(c.clone()), s0),
-                Op::UnaryOp(..) | Op::TernaryOp(..) => {
-                    panic!();
-                },
-                Op::BinaryOp(binary_op, fst, snd) => {
-                    let fst_subtree = ExpressionView { nodes: self.nodes, head: *fst };
-                    let (fst_operand, fst_state) = fst_subtree.apply_with_state(f, s0);
-                    let snd_subtree = ExpressionView { nodes: self.nodes, head: *snd };
-                    let (snd_operand, snd_state) = snd_subtree.apply_with_state(f, fst_state);
-                    if let Some((fst, snd)) = fst_operand.zip(snd_operand) {
-                        f(Op::BinaryOp(*binary_op, fst, snd), snd_state)
-                    } else {
-                        return (None, snd_state);
-                    }
-                },
-            };
-            (Some(val), state)
-        } else {
-            (None, s0)
-        }
+
+    fn subtree(&self, root: &usize) -> ExpressionView<T> {
+        ExpressionView { nodes: self.nodes, head: *root }
     }
 }
 
-impl<T: std::fmt::Debug + std::clone::Clone + AstDrawable> std::fmt::Debug for Expression<T> {
+impl<T: std::fmt::Debug + std::clone::Clone> std::fmt::Debug for Expression<T> {
     fn fmt(self: &Self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "Expression")
-    }
-}
-
-impl<T: std::fmt::Debug + std::clone::Clone + AstDrawable> std::fmt::Display for Expression<T> {
-    fn fmt(self: &Self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.to_drawn_string())
     }
 }
 
@@ -340,25 +250,25 @@ impl Expression<String> {
         }
     }
     pub fn to_typed(self: Self, scope: HashMap<String, String>) -> (Option<Result<Expression<TypedVariable>, String>>, HashMap<String, String>) {
-        self.root().apply_with_state(&|op, mut scope: HashMap<String, String>| {
-            let (val, scope) = match op {
-                Op::Value(val) => {
+        self.view().apply_with_state(&|op, scope: &mut HashMap<String, String>| {
+            match op {
+                Op::<&UnaryOp, &BinaryOp, &TernaryOp, Result<Expression<TypedVariable>, String>, &Value<String>>::Value(val) => {
                     let val = match val {
-                        Value::Literal(i) => Value::Literal(i),
+                        Value::Literal(i) => Value::Literal(i.clone()),
                         Value::Variable(var) => {
-                            if let Some(t) = scope.get(&var) {
-                                Value::Variable(TypedVariable { name: var, t: t.clone() })
+                            if let Some(t) = scope.get(var) {
+                                Value::Variable(TypedVariable { name: var.clone(), t: t.clone() })
                             } else {
-                                return (Err(String::from("")), scope);
+                                return Err(String::from(""));
                             }
                         }
                     };
-                    (Ok(Expression { nodes: vec![Op::Value(val)], head: 0 }), scope)
+                    Ok(Expression { nodes: vec![Op::Value(val)], head: 0 })
                 },
                 Op::UnaryOp(..) | Op::TernaryOp(..) => {
                     panic!();
                 },
-                Op::BinaryOp(binary_op, fst_result, snd_result) => {
+                Op::BinaryOp(op, fst_result, snd_result) => {
                     let mut fst: Expression<TypedVariable> = fst_result.unwrap();
                     let mut snd: Expression<TypedVariable> = snd_result.unwrap();
                     let fst_n = fst.nodes.len();
@@ -370,12 +280,11 @@ impl Expression<String> {
                         val => val
                     }).collect();
                     fst.nodes.append(&mut snd.nodes);
-                    fst.nodes.push(Op::BinaryOp(binary_op, fst.head, snd.head));
+                    fst.nodes.push(Op::BinaryOp(op.clone(), fst.head, snd.head));
                     fst.head = fst.nodes.len() - 1;
-                    (Ok(fst), scope)
+                    Ok(fst)
                 },
-            };
-            (val, scope)
+            }
         }, scope)
     }
 }

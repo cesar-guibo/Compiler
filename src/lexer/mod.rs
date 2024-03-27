@@ -6,7 +6,7 @@ use std::rc::Rc;
 pub mod regex;
 
 use crate::parser::{Ast, AstView};
-use regex::{RegexOp, RegexBinaryOp, RegexUnaryOp, RegexTernaryOp};
+use regex::{RegexRefsOp, RegexBinaryOp, RegexUnaryOp, RegexTernaryOp};
 
 #[derive(Clone)]
 struct Node<T> {
@@ -107,18 +107,20 @@ impl<T> std::fmt::Debug for LazyLexer<T> {
 
 impl<T: std::fmt::Debug> LazyLexer<T> {
     pub fn new<U: std::fmt::Debug, V: Ast<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, U, char>>(pattern: V, symbol: Rc<dyn Fn(String) -> T>) -> LazyLexer<T> {
-        let result = pattern.root().apply(&|op: RegexOp<LazyLexer<T>>| match op {
-            RegexOp::Value(ch) => {
+        let result = pattern.view().apply(&|op| match op {
+            RegexRefsOp::<LazyLexer<T>>::Value(ch) => {
                 let storage = vec![
-                    LazyNode { nexts: HashMap::from([(ch, 1)]), epsilons: Vec::new(), symbol: None },
+                    LazyNode { nexts: HashMap::from([(*ch, 1)]), epsilons: Vec::new(), symbol: None },
                     LazyNode { nexts: HashMap::new(), epsilons: Vec::new(), symbol: None }
                 ];
                 LazyLexer { storage, fst: 0, last: 1 }
             },
-            RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, operand) => operand.kleene_closure(),
-            RegexOp::BinaryOp(RegexBinaryOp::Concat, fst, snd) => fst.append(snd),
-            RegexOp::BinaryOp(RegexBinaryOp::Or, fst, snd) => fst.or(snd),
-            RegexOp::TernaryOp(..) => { panic!(); },
+            RegexRefsOp::<LazyLexer<T>>::UnaryOp(RegexUnaryOp::KleeneClosure, operand) => {
+                operand.kleene_closure()
+            },
+            RegexRefsOp::<LazyLexer<T>>::BinaryOp(RegexBinaryOp::Concat, fst, snd) => fst.append(snd),
+            RegexRefsOp::<LazyLexer<T>>::BinaryOp(RegexBinaryOp::Or, fst, snd) => fst.or(snd),
+            RegexRefsOp::<LazyLexer<T>>::TernaryOp(..) => { panic!(); },
         });
         if let Some(mut res) = result {
             res.storage[res.last].symbol = Some(symbol.clone());
@@ -278,45 +280,26 @@ mod tests {
     use super::*;
     use std::boxed::Box;
     use std::str::FromStr;
+    use crate::parser::Op;
+    use regex::RegexOp;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     struct MockedRegexAst {
         head: RegexOp<Box<MockedRegexAst>>
     }
 
-    #[derive(Debug)]
-    struct MockedRegexAstView<'a> {
-        head: &'a RegexOp<Box<MockedRegexAst>>
-    }
-
-    impl<'a> AstView<'a, RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, char> for MockedRegexAstView<'a> {
-        fn apply<T, F: Fn(RegexOp<T>) -> T>(self: Self, f: &F) -> Option<T> {
-            match &self.head {
-                RegexOp::Value(c) => Some(f(RegexOp::Value(*c))),
-                RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, idx) => {
-                    let operand_node = MockedRegexAstView { head: &idx.head };
-                    Some(f(RegexOp::UnaryOp(RegexUnaryOp::KleeneClosure, operand_node.apply(f)?)))
-                },
-                RegexOp::BinaryOp(RegexBinaryOp::Or, fst, snd) => {
-                    let fst_operand_node = MockedRegexAstView { head: &fst.head };
-                    let snd_operand_node = MockedRegexAstView { head: &snd.head };
-                    Some(f(RegexOp::BinaryOp(RegexBinaryOp::Or, fst_operand_node.apply(f)?, snd_operand_node.apply(f)?)))
-                },
-                RegexOp::BinaryOp(RegexBinaryOp::Concat, fst, snd) => {
-                    let fst_operand_node = MockedRegexAstView { head: &fst.head };
-                    let snd_operand_node = MockedRegexAstView { head: &snd.head };
-                    Some(f(RegexOp::BinaryOp(RegexBinaryOp::Concat, fst_operand_node.apply(f)?, snd_operand_node.apply(f)?)))
-                },
-                RegexOp::TernaryOp(..) => {
-                    panic!();
-                },
-            }
+    impl AstView<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, Box<MockedRegexAst>, char> for MockedRegexAst {
+        fn subtree(&self, root: &Box<MockedRegexAst>) -> MockedRegexAst {
+            root.as_ref().clone()
+        }
+        fn root(&self) -> Option<&Op<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, Box<MockedRegexAst>, char>> {
+           Some(&self.head)
         }
     }
 
     impl Ast<RegexUnaryOp, RegexBinaryOp, RegexTernaryOp, Box<MockedRegexAst>, char> for MockedRegexAst {
-        fn root(self: &Self) -> MockedRegexAstView {
-            MockedRegexAstView { head: &self.head }
+        fn view(&self) -> MockedRegexAst {
+            self.clone()
         }
     }
 

@@ -25,27 +25,28 @@ fn main() {
     let mut global_scope = HashMap::<String, String>::new();
     let mut linear_representation = None;
     while let Some(instruction) = Instruction::new(&mut tokens) {
-        println!("{}", &instruction);
-        (linear_representation, global_scope) = instruction.root().apply_with_state(&|op: Op<UnaryInstruction, BinaryInstruction, TernaryInstruction, String, InstructionValue>, mut scope: HashMap<String, String>| {
+        println!("{}", instruction.draw());
+        (linear_representation, global_scope) = instruction.view().apply_with_state(&|op: Op<&UnaryInstruction, &BinaryInstruction, &TernaryInstruction, String, &InstructionValue>, scope: &mut HashMap<String, String>| {
             match op {
                 Op::BinaryOp(BinaryInstruction::Declare, t, variable) => {
                     scope.insert(variable.clone(), t.clone());
-                    (String::new(), scope)
+                    String::new()
                 },
                 Op::TernaryOp(TernaryInstruction::DeclareAndAssign, t, variable, mut expr) => {
                     scope.insert(variable.clone(), t.clone());
                     expr.push_str(format!("\nstore {}, v0", variable).as_str());
-                    (expr, scope)
+                    expr
                 },
                 Op::Value(val) => {
-                    let (res, scope) = match val {
-                        InstructionValue::Type(t) => (t, scope),
-                        InstructionValue::Identifier(var) => (var, scope),
+                    match val {
+                        InstructionValue::Type(t) => t.clone(),
+                        InstructionValue::Identifier(var) => var.clone(),
                         InstructionValue::Expression(exp) => {
                             let auxs = std::rc::Rc::new(std::cell::RefCell::new((0..20).rev().collect::<Vec<usize>>()));
-                            let (typed_res, scope) = exp.clone().to_typed(scope);
+                            let mut typed_res = None;
+                            (typed_res, *scope) = exp.clone().to_typed(scope.clone());
                             let typed = typed_res.unwrap().unwrap();
-                            let (_, insts) = typed.root().apply(&|op| {
+                            let (_, insts) = typed.view().apply(&|op| {
                                 match op {
                                     Op::Value(val) => {
                                         let to_use = auxs.borrow_mut().pop().unwrap();
@@ -74,12 +75,11 @@ fn main() {
                                     _ => { panic!(); }
                                 }
                             }).unwrap();
-                            (format!("{}", insts.join("\n")), scope)
+                            format!("{}", insts.join("\n"))
                         }
-                    };
-                    (res, scope)
+                    }
                 }
-                _ => (String::new(), scope)
+                _ => String::new()
             }
         }, global_scope);
         println!("{}", linear_representation.unwrap());
